@@ -36,6 +36,7 @@ import org.toubassi.femtozip.models.GZipCompressionModel;
 import org.toubassi.femtozip.models.GZipDictionaryCompressionModel;
 import org.toubassi.femtozip.models.PureHuffmanCompressionModel;
 import org.toubassi.femtozip.models.VariableIntCompressionModel;
+import org.toubassi.femtozip.models.LZMA2DictionaryCompressionModel;
 import org.toubassi.femtozip.substring.SubstringPacker;
 import org.toubassi.femtozip.util.StreamUtil;
 
@@ -54,17 +55,17 @@ import org.toubassi.femtozip.util.StreamUtil;
  * 4. Later (perhaps in a different process), load the model via the static
  *    CompressionModel.loadModel(String);
  * 5. Use CompressionModel.compress/decompress as needed.
- * 
+ *
  * For a simple pure Java example, see the org.toubassi.femtozip.ExampleTest JUnit test
  * case in the source distribution of FemtoZip at http://github.com/gtoubassi/femtozip
- * 
+ *
  * To use the JNI interface to FemtoZip, you will follow largely the same recipe, but you
  * will use the NativeCompressionModel.
- * 
- * @see org.toubassi.femtozip.model.NativeCompressionModel
+ *
+ * @see org.toubassi.femtozip.models.NativeCompressionModel
  */
 public abstract class CompressionModel implements SubstringPacker.Consumer {
-    
+
     protected byte[] dictionary;
     protected SubstringPacker packer;
     private int maxDictionaryLength;
@@ -92,7 +93,7 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
         }
         return model;
     }
-    
+
     public static class ModelOptimizationResult implements Comparable<ModelOptimizationResult>{
         public CompressionModel model;
         public int totalCompressedSize;
@@ -105,12 +106,12 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
         public int compareTo(ModelOptimizationResult other) {
             return totalCompressedSize - other.totalCompressedSize;
         }
-        
+
         public void accumulate(ModelOptimizationResult result) {
             totalCompressedSize += result.totalCompressedSize < result.totalDataSize ? result.totalCompressedSize:  result.totalDataSize;
             totalDataSize += result.totalDataSize;
         }
-        
+
         public String toString() {
             DecimalFormat format = new DecimalFormat("#.##");
             String prefix = "";
@@ -120,7 +121,7 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
             return prefix + format.format((100f * totalCompressedSize) / totalDataSize) + "% (" + totalCompressedSize + " from " + totalDataSize + " bytes)";
         }
     }
-    
+
     /**
      * Builds a new model trained on the specified documents.  This is where it all begins.
      * @return The newly created CompressionModel
@@ -129,18 +130,20 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
     public static CompressionModel buildOptimalModel(DocumentList documents) throws IOException {
         return buildOptimalModel(documents, null, null, false);
     }
-    
+
     public static CompressionModel buildOptimalModel(DocumentList documents, List<ModelOptimizationResult> results, CompressionModel[] competingModels, boolean verify) throws IOException {
-        
+
         if (competingModels == null || competingModels.length == 0) {
-            competingModels = new CompressionModel[5];
-            competingModels[0] = new FemtoZipCompressionModel();
-            competingModels[1] = new PureHuffmanCompressionModel();
-            competingModels[2] = new GZipCompressionModel();
-            competingModels[3] = new GZipDictionaryCompressionModel();
-            competingModels[4] = new VariableIntCompressionModel();
+            competingModels = new CompressionModel[] {
+                    new FemtoZipCompressionModel(),
+                    new PureHuffmanCompressionModel(),
+                    new GZipCompressionModel(),
+                    new GZipDictionaryCompressionModel(),
+                    new VariableIntCompressionModel(),
+                    new LZMA2DictionaryCompressionModel()
+            };
         }
-        
+
         if (results == null) {
             results = new ArrayList<ModelOptimizationResult>();
         }
@@ -148,13 +151,13 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
         for (CompressionModel model : competingModels) {
             results.add(new ModelOptimizationResult(model));
         }
-        
+
         // Split the documents into two groups.  One for building each model out
         // and one for testing which model is best.  Shouldn't build and test
         // with the same set as a model may over optimize for the training set.
         SamplingDocumentList trainingDocuments = new SamplingDocumentList(documents, 2, 0);
         SamplingDocumentList testingDocuments = new SamplingDocumentList(documents, 2, 1);
-        
+
         // Build the dictionary once to avoid rebuilding for each model.
         byte[] dictionary = buildDictionary(trainingDocuments);
 
@@ -168,29 +171,29 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
 
         for (int i = 0, count = testingDocuments.size(); i < count; i++) {
             byte[] data = testingDocuments.get(i);
-            
+
             for (ModelOptimizationResult result : results) {
                 ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
                 result.model.compress(data, bytesOut);
-                
+
                 if (verify) {
                     byte[] decompressed = result.model.decompress(bytesOut.toByteArray());
                     if (!Arrays.equals(data, decompressed)) {
                         throw new RuntimeException("Compress/Decompress round trip failed for " + result.model.getClass().getSimpleName());
                     }
                 }
-                
+
                 result.totalCompressedSize += bytesOut.size();
                 result.totalDataSize += data.length;
             }
         }
-        
+
         Collections.sort(results);
-        
+
         ModelOptimizationResult bestResult = results.get(0);
         return bestResult.model;
     }
-    
+
     public void setDictionary(byte[] dictionary) {
         if (maxDictionaryLength > 0 && dictionary.length > maxDictionaryLength) {
             // We chop off the front as important strings are packed towards the end for shorter lengths/offsets
@@ -199,31 +202,31 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
         this.dictionary = dictionary;
         packer = null;
     }
-    
+
     public byte[] getDictionary() {
         return dictionary;
     }
-    
+
     public int getMaxDictionaryLength() {
         return maxDictionaryLength;
     }
-    
+
     public void setMaxDictionaryLength(int length) {
         maxDictionaryLength = length;
     }
-    
+
     protected SubstringPacker getSubstringPacker() {
         if (packer == null) {
             packer = new SubstringPacker(getDictionary());
         }
         return packer;
     }
-    
+
     public void load(DataInputStream in) throws IOException {
         in.readInt(); // file format version, currently unused.
-        
+
         int dictionaryLength = in.readInt();
-        
+
         if (dictionaryLength == -1) {
             setDictionary(null);
         }
@@ -248,47 +251,47 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
             out.write(dictionary);
         }
     }
-    
+
     /**
      * Loads a model previously saved with save.  You must use this
      * static because it dynamically instantiates the correct
      * model based on the type that was saved.
      * @param path
      * @throws IOException
-     * 
-     * @see org.toubassi.femtozip.CompressionModel.save(String path) throws IOException
+     *
+     * @see org.toubassi.femtozip.CompressionModel#save(String path) throws IOException
      */
     public static CompressionModel loadModel(String path) throws IOException {
         FileInputStream fileIn = new FileInputStream(path);
         BufferedInputStream bufferedIn = new BufferedInputStream(fileIn);
         DataInputStream in = new DataInputStream(bufferedIn);
-        
+
         CompressionModel model = instantiateCompressionModel(in.readUTF());
         model.load(in);
-        
+
         in.close();
         return model;
     }
-    
+
     /**
      * Saves the specified model to the specified file path.
      * @param path
      * @throws IOException
-     * 
-     * @see org.toubassi.femtozip.CompressionModel.loadModel(String path) throws IOException
+     *
+     * @see org.toubassi.femtozip.CompressionModel#loadModel(String path) throws IOException
      */
     public void save(String path) throws IOException {
         FileOutputStream fileOut = new FileOutputStream(path);
         BufferedOutputStream bufferedOut = new BufferedOutputStream(fileOut);
         DataOutputStream out = new DataOutputStream(bufferedOut);
-        
+
         out.writeUTF(getClass().getName());
-        
+
         save(out);
-        
+
         out.close();
     }
-    
+
     public abstract void build(DocumentList documents) throws IOException;
 
     /**
@@ -305,35 +308,35 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
         catch (IOException e) {
             throw new RuntimeException(e);
         }
-        
+
     }
-    
+
     public void compress(byte[] data, OutputStream out) throws IOException {
         getSubstringPacker().pack(data, this, null);
     }
-    
+
     /**
      * Decompresses the specified data.
-     * @param data The data to decompress.
+     * @param compressedData The data to decompress.
      * @return The decompressed data
      */
     public abstract byte[] decompress(byte[] compressedData);
-    
+
     protected void buildDictionaryIfUnspecified(DocumentList documents) throws IOException {
         if (dictionary == null) {
             dictionary = buildDictionary(documents);
         }
     }
-    
+
     protected static byte[] buildDictionary(DocumentList documents) throws IOException {
         DictionaryOptimizer optimizer = new DictionaryOptimizer(documents);
         return optimizer.optimize(64*1024);
     }
-    
+
     protected SubstringPacker.Consumer createModelBuilder() {
         return null;
     }
-    
+
     protected SubstringPacker.Consumer buildEncodingModel(DocumentList documents) {
         try {
             SubstringPacker modelBuildingPacker = new SubstringPacker(dictionary);
@@ -341,7 +344,7 @@ public abstract class CompressionModel implements SubstringPacker.Consumer {
             for (int i = 0, count = documents.size(); i < count; i++) {
                 modelBuildingPacker.pack(documents.get(i), modelBuilder, null);
             }
-            
+
             return modelBuilder;
         }
         catch (IOException e) {
